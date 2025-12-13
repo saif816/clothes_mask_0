@@ -33,7 +33,7 @@ height = 1024
 
 # Mixed precision settings
 allow_tf32 = True
-mixed_precision = "no"
+mixed_precision = "bf16"
 
 # Device configuration
 device = "cuda" if torch.cuda.is_available() else "cpu"
