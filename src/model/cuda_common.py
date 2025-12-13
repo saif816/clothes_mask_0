@@ -1,0 +1,27 @@
+import numpy as np
+from cuda import cuda, cudart
+
+def check_cuda_err(err):
+    if isinstance(err, cuda.CUresult):
+        if err != cuda.CUresult.CUDA_SUCCESS:
+            raise RuntimeError("Cuda Error: {}".format(err))
+    if isinstance(err, cudart.cudaError_t):
+        if err != cudart.cudaError_t.cudaSuccess:
+            raise RuntimeError("Cuda Runtime Error: {}".format(err))
+    else:
+        raise RuntimeError("Unknown error type: {}".format(err))
+
+def cuda_call(call):
+    err, res = call[0], call[1:]
+    check_cuda_err(err)
+    if len(res) == 1:
+        res = res[0]
+    return res
+
+def memcpy_host_to_device(device_ptr: int, host_arr: np.ndarray):
+    nbytes = host_arr.size * host_arr.itemsize
+    cuda_call(cudart.cudaMemcpy(device_ptr, host_arr, nbytes, cudart.cudaMemcpyKind.cudaMemcpyHostToDevice))
+
+def memcpy_device_to_host(host_arr: np.ndarray, device_ptr: int):
+    nbytes = host_arr.size * host_arr.itemsize
+    cuda_call(cudart.cudaMemcpy(host_arr, device_ptr, nbytes, cudart.cudaMemcpyKind.cudaMemcpyDeviceToHost))

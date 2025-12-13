@@ -1,0 +1,23 @@
+{
+    "input": {
+        "data": [
+            {
+                "user_id": "a1f3c2e4-3e57-4c8a-9b17-14d11137c2f1",
+                "fitcheck_id": "d49fd42c-9580-49ea-bb1f-c2fa65c03a0f",
+                "profile_image_url": "https://fitcheck-assets.s3.eu-north-1.amazonaws.com/models/565ae0e7-1bbe-4b01-8d27-7f5b2bac47c1.jpeg",
+                "garment_url": "https://fitcheck-assets.s3.eu-north-1.amazonaws.com/clothes/2e6b967e-7744-46de-b7ea-9f0000ba5963.jpeg",
+                "cloth_type": "upper"
+            },
+            {
+                "user_id": "b6e78c2d-4c7a-4296-9e01-ffc3f2355d76",
+                "fitcheck_id": "92f2938f-d7e1-421a-b476-01fa6f2184f6",
+                "profile_image_url": "https://fitcheck-assets.s3.eu-north-1.amazonaws.com/models/565ae0e7-1bbe-4b01-8d27-7f5b2bac47c1.jpeg",
+                "garment_url": "https://fitcheck-assets.s3.eu-north-1.amazonaws.com/clothes/d9a3eab5-90c6-4b10-b9fb-101fe6b9c62f.jpeg",
+                "cloth_type": "overall" 
+            }
+        ],
+        "num_inference_steps": 50,
+        "guidance_scale": 2.5,
+        "seed": 42
+    }
+}
