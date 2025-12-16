@@ -7,8 +7,7 @@ import numpy as np
 import torch
 import tqdm
 from accelerate import load_checkpoint_in_model
-from diffusers import DDIMScheduler, UNet2DConditionModel
-from model.trt_autoencoder import AutoencoderKL
+from diffusers import AutoencoderKL, DDIMScheduler, UNet2DConditionModel
 from diffusers.pipelines.stable_diffusion.safety_checker import \
     StableDiffusionSafetyChecker
 from diffusers.utils.torch_utils import randn_tensor
@@ -27,35 +26,28 @@ class CatVTONPipeline:
         base_ckpt, 
         attn_ckpt, 
         attn_ckpt_version="mix",
-        vae_ckpt="stabilityai/sd-vae-ft-mse",
         weight_dtype=torch.float32,
         device='cuda',
         compile=False,
-        skip_safety_check=True,
+        skip_safety_check=False,
         use_tf32=True,
-        load_unet=True
     ):
         self.device = device
         self.weight_dtype = weight_dtype
         self.skip_safety_check = skip_safety_check
 
         self.noise_scheduler = DDIMScheduler.from_pretrained(base_ckpt, subfolder="scheduler")
-        # self.vae = AutoencoderKL.from_pretrained(vae_ckpt).to(device, dtype=weight_dtype)
-        self.vae = AutoencoderKL()
+        self.vae = AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-mse").to(device, dtype=weight_dtype)
         if not skip_safety_check:
             self.feature_extractor = CLIPImageProcessor.from_pretrained(base_ckpt, subfolder="feature_extractor")
             self.safety_checker = StableDiffusionSafetyChecker.from_pretrained(base_ckpt, subfolder="safety_checker").to(device, dtype=weight_dtype)
-        if load_unet:
-            self.unet = UNet2DConditionModel.from_pretrained(base_ckpt, subfolder="unet").to(device, dtype=weight_dtype)
-            init_adapter(self.unet, cross_attn_cls=SkipAttnProcessor)  # Skip Cross-Attention
-            self.attn_modules = get_trainable_module(self.unet, "attention")
-            self.auto_attn_ckpt_load(attn_ckpt, attn_ckpt_version)
-            if compile:
-                self.unet = torch.compile(self.unet)
-        else:
-            self.unet = None
+        self.unet = UNet2DConditionModel.from_pretrained(base_ckpt, subfolder="unet").to(device, dtype=weight_dtype)
+        init_adapter(self.unet, cross_attn_cls=SkipAttnProcessor)  # Skip Cross-Attention
+        self.attn_modules = get_trainable_module(self.unet, "attention")
+        self.auto_attn_ckpt_load(attn_ckpt, attn_ckpt_version)
         # Pytorch 2.0 Compile
         if compile:
+            self.unet = torch.compile(self.unet)
             self.vae = torch.compile(self.vae, mode="reduce-overhead")
             
         # Enable TF32 for faster training on Ampere GPUs (A100 and RTX 30 series).
@@ -90,7 +82,6 @@ class CatVTONPipeline:
         if isinstance(image, torch.Tensor) and isinstance(condition_image, torch.Tensor) and isinstance(mask, torch.Tensor):
             return image, condition_image, mask
         assert image.size == mask.size, "Image and mask must have the same size"
-        # TODO Batch and torchvison transform
         image = resize_and_crop(image, (width, height))
         mask = resize_and_crop(mask, (width, height))
         condition_image = resize_and_padding(condition_image, (width, height))
@@ -179,7 +170,7 @@ class CatVTONPipeline:
                 # prepare the input for the inpainting model
                 inpainting_latent_model_input = torch.cat([non_inpainting_latent_model_input, mask_latent_concat, masked_latent_concat], dim=1)
                 # predict the noise residual
-                noise_pred = self.unet(
+                noise_pred= self.unet(
                     inpainting_latent_model_input,
                     t.to(self.device),
                     encoder_hidden_states=None, # FIXME
@@ -204,7 +195,7 @@ class CatVTONPipeline:
 
         # Decode the final latents
         latents = latents.split(latents.shape[concat_dim] // 2, dim=concat_dim)[0]
-        latents = 1 / self.vae.scaling_factor * latents
+        latents = 1 / self.vae.config.scaling_factor * latents
         image = self.vae.decode(latents.to(self.device, dtype=self.weight_dtype)).sample
         image = (image / 2 + 0.5).clamp(0, 1)
         # we always cast to float32 as this does not cause significant overhead and is compatible with bfloat16
@@ -296,7 +287,7 @@ class CatVTONPix2PixPipeline(CatVTONPipeline):
                 # prepare the input for the inpainting model
                 p2p_latent_model_input = torch.cat([latent_model_input, condition_latent_concat], dim=1)
                 # predict the noise residual
-                noise_pred = self.unet(
+                noise_pred= self.unet(
                     p2p_latent_model_input,
                     t.to(self.device),
                     encoder_hidden_states=None, 
@@ -321,7 +312,7 @@ class CatVTONPix2PixPipeline(CatVTONPipeline):
 
         # Decode the final latents
         latents = latents.split(latents.shape[concat_dim] // 2, dim=concat_dim)[0]
-        latents = 1 / self.vae.scaling_factor * latents
+        latents = 1 / self.vae.config.scaling_factor * latents
         image = self.vae.decode(latents.to(self.device, dtype=self.weight_dtype)).sample
         image = (image / 2 + 0.5).clamp(0, 1)
         # we always cast to float32 as this does not cause significant overhead and is compatible with bfloat16
