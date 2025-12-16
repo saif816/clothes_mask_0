@@ -1,7 +1,7 @@
+
 import inspect
 import os
 from typing import Union
-
 import PIL
 import numpy as np
 import torch
@@ -13,18 +13,15 @@ from diffusers.pipelines.stable_diffusion.safety_checker import \
 from diffusers.utils.torch_utils import randn_tensor
 from huggingface_hub import snapshot_download
 from transformers import CLIPImageProcessor
-
 from model.attn_processor import SkipAttnProcessor
 from model.utils import get_trainable_module, init_adapter
 from utils import (compute_vae_encodings, numpy_to_pil, prepare_image,
                    prepare_mask_image, resize_and_crop, resize_and_padding)
-
-
 class CatVTONPipeline:
     def __init__(
-        self, 
-        base_ckpt, 
-        attn_ckpt, 
+        self,
+        base_ckpt,
+        attn_ckpt,
         attn_ckpt_version="mix",
         weight_dtype=torch.float32,
         device='cuda',
@@ -35,26 +32,24 @@ class CatVTONPipeline:
         self.device = device
         self.weight_dtype = weight_dtype
         self.skip_safety_check = skip_safety_check
-
         self.noise_scheduler = DDIMScheduler.from_pretrained(base_ckpt, subfolder="scheduler")
         self.vae = AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-mse").to(device, dtype=weight_dtype)
         if not skip_safety_check:
             self.feature_extractor = CLIPImageProcessor.from_pretrained(base_ckpt, subfolder="feature_extractor")
             self.safety_checker = StableDiffusionSafetyChecker.from_pretrained(base_ckpt, subfolder="safety_checker").to(device, dtype=weight_dtype)
         self.unet = UNet2DConditionModel.from_pretrained(base_ckpt, subfolder="unet").to(device, dtype=weight_dtype)
-        init_adapter(self.unet, cross_attn_cls=SkipAttnProcessor)  # Skip Cross-Attention
+        init_adapter(self.unet, cross_attn_cls=SkipAttnProcessor) # Skip Cross-Attention
         self.attn_modules = get_trainable_module(self.unet, "attention")
         self.auto_attn_ckpt_load(attn_ckpt, attn_ckpt_version)
         # Pytorch 2.0 Compile
         if compile:
             self.unet = torch.compile(self.unet)
             self.vae = torch.compile(self.vae, mode="reduce-overhead")
-            
+           
         # Enable TF32 for faster training on Ampere GPUs (A100 and RTX 30 series).
         if use_tf32:
             torch.set_float32_matmul_precision("high")
             torch.backends.cuda.matmul.allow_tf32 = True
-
     def auto_attn_ckpt_load(self, attn_ckpt, version):
         sub_folder = {
             "mix": "mix-48k-1024",
@@ -67,7 +62,7 @@ class CatVTONPipeline:
             repo_path = snapshot_download(repo_id=attn_ckpt)
             print(f"Downloaded {attn_ckpt} to {repo_path}")
             load_checkpoint_in_model(self.attn_modules, os.path.join(repo_path, sub_folder, 'attention'))
-            
+           
     def run_safety_checker(self, image):
         if self.safety_checker is None:
             has_nsfw_concept = None
@@ -77,7 +72,7 @@ class CatVTONPipeline:
                 images=image, clip_input=safety_checker_input.pixel_values.to(self.weight_dtype)
             )
         return image, has_nsfw_concept
-    
+   
     def check_inputs(self, image, condition_image, mask, width, height):
         if isinstance(image, torch.Tensor) and isinstance(condition_image, torch.Tensor) and isinstance(mask, torch.Tensor):
             return image, condition_image, mask
@@ -86,20 +81,18 @@ class CatVTONPipeline:
         mask = resize_and_crop(mask, (width, height))
         condition_image = resize_and_padding(condition_image, (width, height))
         return image, condition_image, mask
-    
+   
     def prepare_extra_step_kwargs(self, generator, eta):
         # prepare extra kwargs for the scheduler step, since not all schedulers have the same signature
         # eta (η) is only used with the DDIMScheduler, it will be ignored for other schedulers.
         # eta corresponds to η in DDIM paper: https://arxiv.org/abs/2010.02502
         # and should be between [0, 1]
-
         accepts_eta = "eta" in set(
             inspect.signature(self.noise_scheduler.step).parameters.keys()
         )
         extra_step_kwargs = {}
         if accepts_eta:
             extra_step_kwargs["eta"] = eta
-
         # check if the scheduler accepts generator
         accepts_generator = "generator" in set(
             inspect.signature(self.noise_scheduler.step).parameters.keys()
@@ -107,10 +100,9 @@ class CatVTONPipeline:
         if accepts_generator:
             extra_step_kwargs["generator"] = generator
         return extra_step_kwargs
-
     @torch.no_grad()
     def __call__(
-        self, 
+        self,
         image: Union[PIL.Image.Image, torch.Tensor],
         condition_image: Union[PIL.Image.Image, torch.Tensor],
         mask: Union[PIL.Image.Image, torch.Tensor],
@@ -122,7 +114,7 @@ class CatVTONPipeline:
         eta=1.0,
         **kwargs
     ):
-        concat_dim = -2  # FIXME: y axis concat
+        concat_dim = -2 # FIXME: y axis concat
         # Prepare inputs to Tensor
         image, condition_image, mask = self.check_inputs(image, condition_image, mask, width, height)
         image = prepare_image(image).to(self.device, dtype=self.weight_dtype)
@@ -158,7 +150,6 @@ class CatVTONPipeline:
                 ]
             )
             mask_latent_concat = torch.cat([mask_latent_concat] * 2)
-
         # Denoising loop
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
         num_warmup_steps = (len(timesteps) - num_inference_steps * self.noise_scheduler.order)
@@ -192,7 +183,6 @@ class CatVTONPipeline:
                     and (i + 1) % self.noise_scheduler.order == 0
                 ):
                     progress_bar.update()
-
         # Decode the final latents
         latents = latents.split(latents.shape[concat_dim] // 2, dim=concat_dim)[0]
         latents = 1 / self.vae.config.scaling_factor * latents
@@ -201,7 +191,7 @@ class CatVTONPipeline:
         # we always cast to float32 as this does not cause significant overhead and is compatible with bfloat16
         image = image.cpu().permute(0, 2, 3, 1).float().numpy()
         image = numpy_to_pil(image)
-        
+       
         # Safety Check
         if not self.skip_safety_check:
             current_script_directory = os.path.dirname(os.path.realpath(__file__))
@@ -213,8 +203,6 @@ class CatVTONPipeline:
                 if not_safe:
                     image[i] = nsfw_image
         return image
-
-
 class CatVTONPix2PixPipeline(CatVTONPipeline):
     def auto_attn_ckpt_load(self, attn_ckpt, version):
         # TODO: Temperal fix for the model version
@@ -224,17 +212,16 @@ class CatVTONPix2PixPipeline(CatVTONPipeline):
             repo_path = snapshot_download(repo_id=attn_ckpt)
             print(f"Downloaded {attn_ckpt} to {repo_path}")
             load_checkpoint_in_model(self.attn_modules, os.path.join(repo_path, version, 'attention'))
-    
+   
     def check_inputs(self, image, condition_image, width, height):
         if isinstance(image, torch.Tensor) and isinstance(condition_image, torch.Tensor) and isinstance(torch.Tensor):
             return image, condition_image
         image = resize_and_crop(image, (width, height))
         condition_image = resize_and_padding(condition_image, (width, height))
         return image, condition_image
-
     @torch.no_grad()
     def __call__(
-        self, 
+        self,
         image: Union[PIL.Image.Image, torch.Tensor],
         condition_image: Union[PIL.Image.Image, torch.Tensor],
         num_inference_steps: int = 50,
@@ -275,7 +262,6 @@ class CatVTONPix2PixPipeline(CatVTONPipeline):
                     condition_latent_concat,
                 ]
             )
-
         # Denoising loop
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
         num_warmup_steps = (len(timesteps) - num_inference_steps * self.noise_scheduler.order)
@@ -290,7 +276,7 @@ class CatVTONPix2PixPipeline(CatVTONPipeline):
                 noise_pred= self.unet(
                     p2p_latent_model_input,
                     t.to(self.device),
-                    encoder_hidden_states=None, 
+                    encoder_hidden_states=None,
                     return_dict=False,
                 )[0]
                 # perform guidance
@@ -309,7 +295,6 @@ class CatVTONPix2PixPipeline(CatVTONPipeline):
                     and (i + 1) % self.noise_scheduler.order == 0
                 ):
                     progress_bar.update()
-
         # Decode the final latents
         latents = latents.split(latents.shape[concat_dim] // 2, dim=concat_dim)[0]
         latents = 1 / self.vae.config.scaling_factor * latents
@@ -318,7 +303,7 @@ class CatVTONPix2PixPipeline(CatVTONPipeline):
         # we always cast to float32 as this does not cause significant overhead and is compatible with bfloat16
         image = image.cpu().permute(0, 2, 3, 1).float().numpy()
         image = numpy_to_pil(image)
-        
+       
         # Safety Check
         if not self.skip_safety_check:
             current_script_directory = os.path.dirname(os.path.realpath(__file__))
